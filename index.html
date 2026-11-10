@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>अमेज़न खज़ाना</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#0b1a0f; font-family:sans-serif; touch-action:none; user-select:none; -webkit-user-select:none; }
+  canvas { display:block; }
+  #hud { position:fixed; top:8px; left:8px; right:8px; color:#fff; text-shadow:0 0 4px #000; font-size:15px; pointer-events:none; display:flex; justify-content:space-between; }
+  #hint { position:fixed; top:40px; left:8px; right:8px; text-align:center; color:#ffe9a0; text-shadow:0 0 5px #000; font-size:16px; pointer-events:none; }
+  #menu { position:fixed; inset:0; background:rgba(5,15,8,0.92); color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:20px; z-index:10; }
+  #menu h1 { color:#ffd86b; margin:0 0 10px; font-size:30px; }
+  #menu p { max-width:480px; line-height:1.5; }
+  #menu button { margin-top:16px; font-size:20px; padding:12px 30px; border:0; border-radius:10px; background:#d9a425; color:#2a1a00; font-weight:bold; }
+  .btn { position:fixed; width:76px; height:76px; border-radius:50%; background:rgba(255,255,255,0.22); border:2px solid rgba(255,255,255,0.5); color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:bold; z-index:5; }
+  #jumpBtn { right:22px; bottom:40px; }
+  #runBtn { right:112px; bottom:24px; }
+  #stickBase { position:fixed; left:24px; bottom:30px; width:120px; height:120px; border-radius:50%; background:rgba(255,255,255,0.15); border:2px solid rgba(255,255,255,0.4); z-index:5; }
+  #stickKnob { position:absolute; left:35px; top:35px; width:50px; height:50px; border-radius:50%; background:rgba(255,255,255,0.5); }
+</style>
+</head>
+<body>
+<div id="hud"><span id="timer">समय: 0:00</span><span id="found">खज़ाने के निशान: 0/5</span></div>
+<div id="hint"></div>
+<div id="menu">
+  <h1>अमेज़न का खुफ़िया खज़ाना</h1>
+  <p>तुम एक आदि मानव हो। घने अमेज़न जंगल में पाँच पुराने पत्थर के निशान छुपे हैं। पाँचों ढूँढो, तब गुफ़ा का दरवाज़ा खुलेगा और अंदर छुपा खज़ाना मिलेगा। नदी से बचकर चलो और पेड़ों के बीच ध्यान से ढूँढो।</p>
+  <p>बाएँ जॉयस्टिक से चलो, दाईं तरफ़ उँगली घुमाकर देखो।</p>
+  <button id="startBtn">खेल शुरू करो</button>
+</div>
+<div id="stickBase"><div id="stickKnob"></div></div>
+<div class="btn" id="jumpBtn">कूदो</div>
+<div class="btn" id="runBtn">दौड़ो</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+(function(){
+  // ---------- बुनियादी सेटअप ----------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x9fc9a0);
+  scene.fog = new THREE.FogExp2(0x7fae82, 0.028);
+  const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 300);
+  const renderer = new THREE.WebGLRenderer({antialias:false});
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+  addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+  scene.add(new THREE.HemisphereLight(0xdfffd0, 0x2a4a2a, 0.9));
+  const sun = new THREE.DirectionalLight(0xfff2c0, 0.8);
+  sun.position.set(40, 80, 20);
+  scene.add(sun);
+
+  // ---------- मिट्टी की ऊँचाई ----------
+  const WORLD = 200;
+  function groundHeight(x, z) {
+    return Math.sin(x*0.05)*1.6 + Math.cos(z*0.045)*1.6 + Math.sin((x+z)*0.11)*0.6;
+  }
+  const gGeo = new THREE.PlaneGeometry(WORLD*2, WORLD*2, 100, 100);
+  gGeo.rotateX(-Math.PI/2);
+  const gp = gGeo.attributes.position;
+  for (let i=0;i<gp.count;i++) gp.setY(i, groundHeight(gp.getX(i), gp.getZ(i)));
+  gGeo.computeVertexNormals();
+  const ground = new THREE.Mesh(gGeo, new THREE.MeshLambertMaterial({color:0x2f6b2f}));
+  scene.add(ground);
+
+  // ---------- नदी ----------
+  const riverZ = -40;
+  const river = new THREE.Mesh(new THREE.PlaneGeometry(WORLD*2, 14), new THREE.MeshLambertMaterial({color:0x2a6f9a, transparent:true, opacity:0.85}));
+  river.rotation.x = -Math.PI/2;
+  river.position.set(0, -1.2, riverZ);
+  scene.add(river);
+  // ज़मीन नदी के पास दबाओ
+  const gp2 = gGeo.attributes.position;
+  for (let i=0;i<gp2.count;i++){
+    const z = gp2.getZ(i);
+    if (Math.abs(z - riverZ) < 9) gp2.setY(i, gp2.getY(i) - 3.5 * (1 - Math.abs(z-riverZ)/9));
+  }
+  gGeo.computeVertexNormals();
+  function terrainY(x,z){
+    let y = groundHeight(x,z);
+    if (Math.abs(z - riverZ) < 9) y -= 3.5 * (1 - Math.abs(z-riverZ)/9);
+    return y;
+  }
+  // पुल (नदी पार करने के लिए)
+  const bridge = new THREE.Mesh(new THREE.BoxGeometry(5, 0.4, 20), new THREE.MeshLambertMaterial({color:0x7a5230}));
+  bridge.position.set(0, 0.4, riverZ);
+  scene.add(bridge);
+  const bridgeTop = 0.6;
+
+  // ---------- पेड़ ----------
+  const rng = (function(){ let s=12345; return ()=> (s = (s*16807)%2147483647)/2147483647; })();
+  const trunkMat = new THREE.MeshLambertMaterial({color:0x5a3b1e});
+  const leafMats = [0x1f5f26,0x2a7a30,0x18501f].map(c=>new THREE.MeshLambertMaterial({color:c}));
+  const trees = [];
+  for (let i=0;i<420;i++){
+    const x = (rng()-0.5)*WORLD*1.8, z = (rng()-0.5)*WORLD*1.8;
+    if (Math.abs(z-riverZ) < 11 && Math.abs(x) < 6) continue;
+    if (Math.abs(z-riverZ) < 8) continue;
+    if (Math.hypot(x, z-5) < 6) continue;
+    const h = 7 + rng()*9;
+    const g = new THREE.Group();
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.6,h,6), trunkMat);
+    trunk.position.y = h/2;
+    g.add(trunk);
+    const crown = new THREE.Mesh(new THREE.SphereGeometry(2.6+rng()*1.6, 7, 6), leafMats[i%3]);
+    crown.position.y = h + 0.5;
+    crown.scale.y = 0.8;
+    g.add(crown);
+    g.position.set(x, terrainY(x,z), z);
+    scene.add(g);
+    trees.push({x, z, r:0.8});
+    // लटकती बेल
+    if (rng() < 0.35){
+      const vine = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,5,4), new THREE.MeshLambertMaterial({color:0x3f8f3a}));
+      vine.position.set(x+1.2, terrainY(x,z)+h-2, z);
+      scene.add(vine);
+    }
+  }
+  // झाड़ियाँ
+  for (let i=0;i<220;i++){
+    const x=(rng()-0.5)*WORLD*1.8, z=(rng()-0.5)*WORLD*1.8;
+    if (Math.abs(z-riverZ) < 9) continue;
+    const b = new THREE.Mesh(new THREE.SphereGeometry(0.7+rng()*0.6,5,4), leafMats[i%3]);
+    b.position.set(x, terrainY(x,z)+0.4, z);
+    scene.add(b);
+  }
+
+  // ---------- आदि मानव (किरदार) ----------
+  const player = new THREE.Group();
+  const skin = new THREE.MeshLambertMaterial({color:0xc58a5a});
+  const fur = new THREE.MeshLambertMaterial({color:0x6b4423});
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.9,0.4), fur); body.position.y = 1.1; player.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.28,8,6), skin); head.position.y = 1.8; player.add(head);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.31,8,6,0,Math.PI*2,0,Math.PI/2), new THREE.MeshLambertMaterial({color:0x1a1008})); hair.position.y = 1.85; player.add(hair);
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.25,0.7,0.25), skin); legL.position.set(-0.18,0.35,0); player.add(legL);
+  const legR = legL.clone(); legR.position.x = 0.18; player.add(legR);
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.2,0.7,0.2), skin); armL.position.set(-0.48,1.15,0); player.add(armL);
+  const armR = armL.clone(); armR.position.x = 0.48; player.add(armR);
+  const spear = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,2.2,5), new THREE.MeshLambertMaterial({color:0x8a6a3a}));
+  spear.position.set(0.62,1.2,0.1); player.add(spear);
+  scene.add(player);
+
+  const state = { x:0, z:5, y:0, vy:0, onGround:true, yaw:0, camYaw:0, camPitch:0.25, started:false, time:0, found:0, won:false };
+  player.position.set(state.x, terrainY(state.x,state.z), state.z);
+
+  // ---------- पत्थर के निशान (5) ----------
+  const marks = [];
+  const markPos = [[40,20],[-55,-10],[70,-70],[-30,-95],[10,90]];
+  const markMat = new THREE.MeshLambertMaterial({color:0xd8c78a, emissive:0x554418});
+  markPos.forEach((p,i)=>{
+    const g = new THREE.Group();
+    const stone = new THREE.Mesh(new THREE.BoxGeometry(1.4,3,0.7), new THREE.MeshLambertMaterial({color:0x7d7d78}));
+    stone.position.y = 1.5; g.add(stone);
+    const glyph = new THREE.Mesh(new THREE.TorusGeometry(0.4,0.08,6,12), markMat);
+    glyph.position.set(0,1.8,0.38); g.add(glyph);
+    const glow = new THREE.PointLight(0xffd070, 1.2, 14); glow.position.set(0,2.5,1); g.add(glow);
+    g.position.set(p[0], terrainY(p[0],p[1]), p[1]);
+    scene.add(g);
+    marks.push({g, x:p[0], z:p[1], got:false, glyph});
+  });
+
+  // ---------- गुफ़ा और खज़ाना ----------
+  const cave = new THREE.Group();
+  const rock = new THREE.Mesh(new THREE.SphereGeometry(9,10,8,0,Math.PI*2,0,Math.PI/2), new THREE.MeshLambertMaterial({color:0x5a5a55}));
+  cave.add(rock);
+  const door = new THREE.Mesh(new THREE.BoxGeometry(3.4,4.6,0.8), new THREE.MeshLambertMaterial({color:0x3a2a18}));
+  door.position.set(0,2.3,8.6); cave.add(door);
+  const caveX = -80, caveZ = 60;
+  cave.position.set(caveX, terrainY(caveX,caveZ), caveZ);
+  cave.rotation.y = 0;
+  scene.add(cave);
+  const chest = new THREE.Group();
+  const cb = new THREE.Mesh(new THREE.BoxGeometry(1.4,0.9,0.9), new THREE.MeshLambertMaterial({color:0x8a5a1a})); cb.position.y=0.45; chest.add(cb);
+  const cl = new THREE.Mesh(new THREE.BoxGeometry(1.45,0.35,0.95), new THREE.MeshLambertMaterial({color:0xe3b23c, emissive:0x5a4010})); cl.position.y=1.05; chest.add(cl);
+  const cglow = new THREE.PointLight(0xffd35a, 2, 12); cglow.position.y = 2; chest.add(cglow);
+  chest.position.set(caveX, terrainY(caveX,caveZ)+0.1, caveZ);
+  chest.visible = false;
+  scene.add(chest);
+  let caveOpen = false;
+
+  // ---------- कंट्रोल ----------
+  const keys = {};
+  addEventListener('keydown', e => { keys[e.code] = true; });
+  addEventListener('keyup', e => { keys[e.code] = false; });
+  let stickVec = {x:0,y:0}, stickId = null, lookId = null, lastLook = null, jumpHeld = false, runHeld = false;
+  const stickBase = document.getElementById('stickBase'), stickKnob = document.getElementById('stickKnob');
+  function stickMove(t){
+    const r = stickBase.getBoundingClientRect();
+    const cx = r.left + r.width/2, cy = r.top + r.height/2;
+    let dx = t.clientX - cx, dy = t.clientY - cy;
+    const m = Math.hypot(dx,dy), max = 50;
+    if (m > max){ dx = dx/m*max; dy = dy/m*max; }
+    stickKnob.style.left = (35 + dx) + 'px'; stickKnob.style.top = (35 + dy) + 'px';
+    stickVec.x = dx/max; stickVec.y = dy/max;
+  }
+  function stickReset(){ stickKnob.style.left='35px'; stickKnob.style.top='35px'; stickVec.x=0; stickVec.y=0; stickId=null; }
+  stickBase.addEventListener('touchstart', e => { e.preventDefault(); const t=e.changedTouches[0]; stickId=t.identifier; stickMove(t); }, {passive:false});
+  addEventListener('touchmove', e => {
+    for (const t of e.changedTouches){
+      if (t.identifier === stickId) stickMove(t);
+      else if (t.identifier === lookId && lastLook){
+        state.camYaw -= (t.clientX - lastLook.x) * 0.006;
+        state.camPitch = Math.max(-0.2, Math.min(1.0, state.camPitch + (t.clientY - lastLook.y) * 0.004));
+        lastLook = {x:t.clientX, y:t.clientY};
+      }
+    }
+  }, {passive:false});
+  addEventListener('touchend', e => { for (const t of e.changedTouches){ if (t.identifier===stickId) stickReset(); if (t.identifier===lookId){ lookId=null; lastLook=null; } } });
+  renderer.domElement.addEventListener('touchstart', e => {
+    for (const t of e.changedTouches){ if (t.clientX > innerWidth*0.35 && lookId===null){ lookId=t.identifier; lastLook={x:t.clientX,y:t.clientY}; } }
+  }, {passive:true});
+  const jumpBtn = document.getElementById('jumpBtn'), runBtn = document.getElementById('runBtn');
+  jumpBtn.addEventListener('touchstart', e => { e.preventDefault(); jumpHeld = true; }, {passive:false});
+  jumpBtn.addEventListener('touchend', () => { jumpHeld = false; });
+  runBtn.addEventListener('touchstart', e => { e.preventDefault(); runHeld = true; }, {passive:false});
+  runBtn.addEventListener('touchend', () => { runHeld = false; });
+  // माउस से देखना (कंप्यूटर)
+  let mouseDown = false;
+  addEventListener('mousedown', () => mouseDown = true);
+  addEventListener('mouseup', () => mouseDown = false);
+  addEventListener('mousemove', e => { if (mouseDown){ state.camYaw -= e.movementX*0.004; state.camPitch = Math.max(-0.2, Math.min(1.0, state.camPitch + e.movementY*0.003)); } });
+
+  // ---------- आवाज़ (ब्राउज़र में बनी) ----------
+  let actx = null;
+  function beep(freq, dur, type, vol){
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type || 'sine'; o.frequency.value = freq;
+      g.gain.value = vol || 0.15;
+      g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + dur);
+    } catch(e){}
+  }
+
+  // ---------- मेन्यू ----------
+  const hint = document.getElementById('hint'), timerEl = document.getElementById('timer'), foundEl = document.getElementById('found');
+  document.getElementById('startBtn').addEventListener('click', () => {
+    document.getElementById('menu').style.display = 'none';
+    state.started = true;
+    beep(440, 0.2); 
+    hint.textContent = 'पाँच पत्थर के निशान ढूँढो। सुराग: पुल के उस पार जाओ।';
+    setTimeout(()=>{ if(!state.won) hint.textContent=''; }, 7000);
+  });
+
+  function say(msg, ms){ hint.textContent = msg; setTimeout(()=>{ if (hint.textContent===msg) hint.textContent=''; }, ms||4500); }
+
+  // ---------- मुख्य लूप ----------
+  const clock = new THREE.Clock();
+  function loop(){
+    requestAnimationFrame(loop);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    if (state.started && !state.won){
+      state.time += dt;
+      const mm = Math.floor(state.time/60), ss = Math.floor(state.time%60);
+      timerEl.textContent = 'समय: ' + mm + ':' + (ss<10?'0':'') + ss;
+
+      // चलना
+      let ix = stickVec.x, iy = stickVec.y;
+      if (keys['KeyA']||keys['ArrowLeft']) ix -= 1;
+      if (keys['KeyD']||keys['ArrowRight']) ix += 1;
+      if (keys['KeyW']||keys['ArrowUp']) iy -= 1;
+      if (keys['KeyS']||keys['ArrowDown']) iy += 1;
+      const mag = Math.min(1, Math.hypot(ix,iy));
+      const running = runHeld || keys['ShiftLeft'] || keys['ShiftRight'];
+      const speed = (running ? 12 : 6.5) * mag;
+      if (mag > 0.05){
+        const ang = Math.atan2(ix, iy) + state.camYaw;
+        const vx = Math.sin(ang) * speed * dt, vz = Math.cos(ang) * speed * dt;
+        let nx = state.x + vx, nz = state.z + vz;
+        // पेड़ों से टकराव
+        for (const t of trees){ const d = Math.hypot(nx-t.x, nz-t.z); if (d < t.r+0.4){ nx = state.x; nz = state.z; break; } }
+        // नदी: पुल के बिना पानी में नहीं जाना
+        const inRiver = Math.abs(nz - riverZ) < 6.5;
+        const onBridge = Math.abs(nx) < 2.5;
+        if (inRiver && !onBridge){ nx = state.x; nz = state.z; if (Math.random()<0.02) say('गहरी नदी है! पुल से जाओ।', 2500); }
+        state.x = Math.max(-WORLD+5, Math.min(WORLD-5, nx));
+        state.z = Math.max(-WORLD+5, Math.min(WORLD-5, nz));
+        state.yaw = ang;
+      }
+      // कूदना और गुरुत्वाकर्षण
+      let floor = terrainY(state.x, state.z);
+      if (Math.abs(state.z-riverZ) < 6.5 && Math.abs(state.x) < 2.5) floor = bridgeTop;
+      if ((jumpHeld || keys['Space']) && state.onGround){ state.vy = 9; state.onGround = false; beep(300,0.12,'square',0.08); }
+      state.vy -= 24*dt;
+      state.y += state.vy*dt;
+      if (state.y <= floor){ state.y = floor; state.vy = 0; state.onGround = true; }
+      player.position.set(state.x, state.y, state.z);
+      player.rotation.y = state.yaw;
+      // हाथ-पैर हिलाना
+      const sw = Math.sin(state.time*10) * 0.7 * mag;
+      legL.rotation.x = sw; legR.rotation.x = -sw; armL.rotation.x = -sw; armR.rotation.x = sw;
+
+      // निशान ढूँढना
+      for (const m of marks){
+        if (!m.got && Math.hypot(state.x-m.x, state.z-m.z) < 3.2){
+          m.got = true; state.found++;
+          m.glyph.material = new THREE.MeshLambertMaterial({color:0x66ff88, emissive:0x1a6a2a});
+          foundEl.textContent = 'खज़ाने के निशान: ' + state.found + '/5';
+          beep(660,0.25,'triangle',0.2); setTimeout(()=>beep(880,0.3,'triangle',0.2), 150);
+          if (state.found < 5) say('निशान मिला! अगला ढूँढो। ' + hintFor(state.found), 6000);
+          else { caveOpen = true; say('सब निशान मिल गए! पश्चिम-दक्षिण की गुफ़ा का दरवाज़ा खुल गया। वहाँ जाओ!', 8000); }
+        }
+      }
+      // गुफ़ा
+      if (caveOpen && Math.hypot(state.x-caveX, state.z-(caveZ+9)) < 4){
+        door.visible = false; chest.visible = true;
+      }
+      if (caveOpen && chest.visible && Math.hypot(state.x-caveX, state.z-caveZ) < 3){
+        state.won = true;
+        const mm2 = Math.floor(state.time/60), ss2 = Math.floor(state.time%60);
+        hint.style.fontSize = '22px';
+        hint.textContent = 'बधाई हो! खुफ़िया खज़ाना मिल गया! समय: ' + mm2 + ' मिनट ' + ss2 + ' सेकंड';
+        for (let i=0;i<5;i++) setTimeout(()=>beep(500+i*120,0.3,'triangle',0.2), i*180);
+      }
+    }
+    // कैमरा
+    const camDist = 7, cy = state.y + 2.6;
+    const cxp = state.x - Math.sin(state.camYaw) * camDist * Math.cos(state.camPitch);
+    const czp = state.z - Math.cos(state.camYaw) * camDist * Math.cos(state.camPitch);
+    camera.position.set(cxp, cy + Math.sin(state.camPitch)*camDist*0.6, czp);
+    camera.lookAt(state.x, state.y + 1.6, state.z);
+    // चमकते निशान घुमाओ
+    for (const m of marks) m.glyph.rotation.z += dt;
+    renderer.render(scene, camera);
+  }
+  function hintFor(n){
+    const h = ['सुराग: पश्चिम की ओर जाओ।','सुराग: नदी के उस पार, दूर उत्तर-पूर्व में।','सुराग: दक्षिण-पश्चिम के घने पेड़ों में।','सुराग: दक्षिण की तरफ़, सीधे चलते जाओ।'];
+    return h[n-1] || '';
+  }
+  loop();
+})();
+</script>
+</body>
+  </html>
